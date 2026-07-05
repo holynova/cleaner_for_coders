@@ -1,10 +1,7 @@
 :root {
-  font-family: "IBM Plex Sans", "PingFang SC", "Segoe UI", sans-serif;
-  color: #172321;
-  background:
-    radial-gradient(circle at 12% 8%, #f7e7c2 0%, #f7e7c200 38%),
-    radial-gradient(circle at 86% 20%, #cae6dd 0%, #cae6dd00 34%),
-    linear-gradient(130deg, #fbfcf4 0%, #f0f6f4 45%, #f7f5ef 100%);
+  font-family: "SF Pro Text", "PingFang SC", "Segoe UI", sans-serif;
+  color: #17212d;
+  background: #f3f5f8;
 }
 
 * {
@@ -14,6 +11,7 @@
 body {
   margin: 0;
   min-height: 100vh;
+  overflow-x: auto;
 }
 
 #root {
@@ -21,55 +19,65 @@ body {
 }
 
 .app-shell {
-  max-width: 1280px;
+  width: 1200px;
+  min-width: 1200px;
+  max-width: 1200px;
   margin: 0 auto;
-  padding: 20px;
+  padding: 18px;
   display: grid;
-  gap: 14px;
+  gap: 12px;
 }
 
 .hero {
   display: flex;
   justify-content: space-between;
+  align-items: center;
   gap: 12px;
-  align-items: flex-start;
 }
 
 .hero h1 {
   margin: 0;
-  font-size: 1.85rem;
+  font-size: 1.45rem;
   letter-spacing: 0.01em;
 }
 
 .hero p {
-  margin: 6px 0 0;
-  color: #34504a;
+  margin: 4px 0 0;
+  color: #667185;
+  font-size: 0.92rem;
 }
 
 .panel {
-  border: 1px solid #ccdad2;
-  background: #fffdf8d9;
-  border-radius: 14px;
-  padding: 14px;
-  backdrop-filter: blur(2px);
+  border: 1px solid #dde3ec;
+  background: #fff;
+  border-radius: 12px;
+  padding: 12px;
+}
+
+.compact-panel {
+  padding: 10px 12px;
 }
 
 .controls {
   display: grid;
-  grid-template-columns: repeat(4, minmax(150px, 1fr));
+  grid-template-columns: repeat(4, minmax(140px, 1fr));
   gap: 10px;
   align-items: end;
+}
+
+.compact-controls {
+  grid-template-columns: 1.2fr 1fr 1fr;
 }
 
 label,
 fieldset {
   display: grid;
   gap: 6px;
-  font-size: 0.92rem;
+  font-size: 0.9rem;
 }
 
 fieldset {
-  border: 1px solid #d4ded9;
+  border: 1px solid #e4e9f0;
   border-radius: 10px;
   padding: 10px;
 }
@@ -80,81 +88,154 @@ textarea,
 button {
   font: inherit;
   border-radius: 10px;
-  border: 1px solid #bfcfca;
+  border: 1px solid #cfd7e4;
   padding: 8px 10px;
   background: #fff;
-  color: #13211e;
+  color: #162033;
 }
 
 button {
   cursor: pointer;
-  transition: transform 120ms ease, box-shadow 120ms ease;
+  transition: 120ms ease;
 }
 
 button:hover {
   transform: translateY(-1px);
-  box-shadow: 0 5px 14px #b7cdc447;
 }
 
 button:disabled {
   cursor: not-allowed;
-  opacity: 0.6;
+  opacity: 0.55;
   transform: none;
-  box-shadow: none;
 }
 
 .primary {
-  background: #0f7b6c;
-  border-color: #0f7b6c;
-  color: #f3fffb;
-  font-weight: 600;
-}
-
-.danger {
-  background: #b74834;
-  border-color: #b74834;
+  background: #1463ff;
+  border-color: #1463ff;
   color: #fff;
   font-weight: 600;
 }
 
+.danger {
+  background: #d64040;
+  border-color: #d64040;
+  color: #fff;
+  font-weight: 600;
+}
+
+.warning {
+  background: #f5f7fb;
+  border-color: #cfd7e4;
+  color: #31415f;
+  font-weight: 600;
+}
+
 .lang-btn {
-  background: #f5fbfa;
+  background: #f7f9fc;
+  border-color: #dde3ec;
 }
 
 .advanced summary {
   cursor: pointer;
   user-select: none;
   font-weight: 600;
+  color: #30415f;
+}
+
+.compact-advanced {
+  border-style: dashed;
 }
 
 .advanced-grid {
-  margin-top: 12px;
+  margin-top: 10px;
   display: grid;
   gap: 10px;
-  grid-template-columns: 1fr 1fr 1.2fr;
+  grid-template-columns: 1fr 180px 1.2fr 1.4fr;
 }
 
 textarea {
-  min-height: 90px;
+  min-height: 72px;
   resize: vertical;
 }
 
 .metrics {
   display: grid;
-  grid-template-columns: repeat(4, minmax(130px, 1fr));
-  gap: 12px;
+  grid-template-columns: repeat(4, minmax(120px, 1fr));
+  gap: 10px;
   align-items: center;
 }
 
+.metrics strong {
+  color: #4b5b77;
+  font-size: 0.85rem;
+}
+
 .metrics p {
-  margin: 5px 0 0;
-  font-size: 1.05rem;
+  margin: 4px 0 0;
+  font-size: 1.08rem;
+  font-weight: 600;
 }
 
 .actions {
   display: flex;
   gap: 8px;
   justify-content: flex-end;
+}
+
+.treemap-title {
+  margin: 0;
+  font-size: 0.98rem;
+}
+
+.treemap-hint {
+  margin: 4px 0 10px;
+  color: #6a768b;
+  font-size: 0.84rem;
+}
+
+.treemap-wrap {
+  width: 100%;
+}
+
+.treemap-canvas {
+  position: relative;
+  width: 100%;
+  height: 300px;
+  border-radius: 10px;
+  overflow: hidden;
+  border: 1px solid #dfe5ee;
+  background: #f8fafc;
+}
+
+.treemap-group {
+  position: absolute;
+  border: 1px dashed #9eb0c9;
+  pointer-events: none;
+}
+
+.treemap-item {
+  position: absolute;
+  border: 1px solid #ffffffd8;
+  color: #1e2b43;
+  display: flex;
+  align-items: flex-start;
+  justify-content: flex-start;
+  padding: 4px;
+  font-size: 0.72rem;
+  font-weight: 600;
+  line-height: 1.15;
+  text-align: left;
+  overflow: hidden;
+}
+
+.treemap-item span {
+  white-space: nowrap;
+  text-shadow: 0 1px 0 #ffffffb2;
+}
+
+.treemap-item.selected {
+  outline: 2px solid #1463ff;
+  outline-offset: -2px;
 }
 
 .table-wrap {
@@ -164,80 +245,51 @@ textarea {
 table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 0.93rem;
+  font-size: 0.9rem;
 }
 
 th,
 td {
-  border-bottom: 1px solid #dfebe7;
+  border-bottom: 1px solid #ebeff5;
   text-align: left;
   padding: 8px 6px;
   vertical-align: top;
 }
 
+th {
+  color: #5f6f89;
+  font-weight: 600;
+}
+
 .path-cell {
-  max-width: 320px;
+  max-width: 540px;
   word-break: break-all;
 }
 
 .empty {
-  color: #607772;
+  color: #78879f;
   margin: 0;
 }
 
 .logs pre {
   margin: 0;
-  max-height: 200px;
+  max-height: 180px;
   overflow: auto;
-  background: #0f1f1bcc;
-  color: #c3f5e9;
+  background: #0f1522;
+  color: #cde2ff;
   border-radius: 10px;
-  padding: 12px;
-  font-family: "IBM Plex Mono", "Consolas", monospace;
-  font-size: 0.84rem;
+  padding: 10px;
+  font-family: "JetBrains Mono", "SF Mono", "Consolas", monospace;
+  font-size: 0.8rem;
 }
 
 .logs h2 {
   margin: 0 0 8px;
-  font-size: 1rem;
+  font-size: 0.95rem;
 }
 
 .report {
-  margin: 10px 0 0;
+  margin: 8px 0 0;
   font-weight: 600;
-  color: #1f4d44;
-}
-
-@media (max-width: 960px) {
-  .controls {
-    grid-template-columns: 1fr 1fr;
-  }
-
-  .advanced-grid {
-    grid-template-columns: 1fr;
-  }
-
-  .metrics {
-    grid-template-columns: 1fr 1fr;
-  }
-}
-
-@media (max-width: 640px) {
-  .app-shell {
-    padding: 12px;
-  }
-
-  .hero {
-    flex-direction: column;
-  }
-
-  .controls,
-  .metrics {
-    grid-template-columns: 1fr;
-  }
-
-  .actions {
-    justify-content: flex-start;
-    flex-wrap: wrap;
-  }
+  color: #21437e;
 }

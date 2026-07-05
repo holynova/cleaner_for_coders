@@ -1,4 +1,4 @@
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import "./App.css";
@@ -38,6 +38,7 @@ interface ScanResponse {
   total_bytes: number;
   item_count: number;
   items: CleanupItem[];
+  cancelled: boolean;
 }
 
 interface CleanupResponse {
@@ -51,6 +52,28 @@ interface LogPayload {
   message: string;
 }
 
+interface TreemapRect {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  label: string;
+  value: number;
+  color: string;
+  itemId?: string;
+}
+
+const treemapPalette = [
+  "#5c7cfa",
+  "#0ca678",
+  "#e8590c",
+  "#c2255c",
+  "#1c7ed6",
+  "#6741d9",
+  "#f08c00",
+  "#099268",
+];
+
 const text = {
   zh: {
     title: "Dev 空间清理工具",
@@ -58,6 +81,7 @@ const text = {
     language: "English",
     scan: "开始扫描",
     scanning: "扫描中...",
+    stopScan: "停止扫描",
     cleanup: "清理选中项",
     cleaning: "清理中...",
     selectAll: "全选",
@@ -88,10 +112,13 @@ const text = {
     risk: "风险提示",
     never: "未知",
     empty: "暂无结果，请先扫描",
+    treemap: "空间分布（Treemap）",
+    treemapHint: "点击色块可快速勾选/取消对应项",
     confirm:
       "即将删除选中项。删除 node_modules 后需要重新安装依赖，删除 Docker 数据可能影响容器运行。确认继续？",
     report: "清理结果",
     logs: "实时日志",
+    scanCancelled: "扫描已中止，结果为中止前已发现的候选项",
   },
   en: {
     title: "Dev Space Cleaner",
@@ -100,6 +127,7 @@ const text = {
     language: "中文",
     scan: "Start Scan",
     scanning: "Scanning...",
+    stopScan: "Stop Scan",
     cleanup: "Clean Selected",
     cleaning: "Cleaning...",
     selectAll: "Select all",
@@ -130,10 +158,13 @@ const text = {
     risk: "Risk",
     never: "Unknown",
     empty: "No results yet. Start a scan first.",
+    treemap: "Storage Treemap",
+    treemapHint: "Click a block to toggle selection",
     confirm:
       "Selected targets will be deleted. node_modules removal requires reinstalling dependencies and Docker cleanup may impact containers. Continue?",
     report: "Cleanup report",
     logs: "Live logs",
+    scanCancelled: "Scan stopped. Showing partial results discovered before cancellation.",
   },
 } as const;
 
@@ -153,10 +184,75 @@ function formatBytes(bytes: number): string {
   return `${value.toFixed(value >= 10 || index === 0 ? 0 : 1)} ${units[index]}`;
 }
 
-function formatTime(ts: number, lang: Lang, fallback: string): string {
-  if (!ts) return fallback;
-  const locale = lang === "zh" ? "zh-CN" : "en-US";
-  return new Date(ts * 1000).toLocaleString(locale);
+function alpha(hexColor: string, value: string): string {
+  return `${hexColor}${value}`;
+}
+
+function buildTreemapRects(items: CleanupItem[], width: number, height: number): TreemapRect[] {
+  if (items.length === 0) return [];
+
+  const groups = new Map<string, CleanupItem[]>();
+  for (const item of items) {
+    const bucket = groups.get(item.kind) ?? [];
+    bucket.push(item);
+    groups.set(item.kind, bucket);
+  }
+
+  const orderedGroups = [...groups.entries()]
+    .map(([kind, groupItems]) => ({
+      kind,
+      items: groupItems.sort((a, b) => b.size_bytes - a.size_bytes),
+      total: groupItems.reduce((sum, item) => sum + item.size_bytes, 0),
+    }))
+    .sort((a, b) => b.total - a.total);
+
+  const total = orderedGroups.reduce((sum, group) => sum + group.total, 0);
+  if (!total) return [];
+
+  const rects: TreemapRect[] = [];
+  let offsetX = 0;
+
+  orderedGroups.forEach((group, groupIndex) => {
+    const groupWidth =
+      groupIndex === orderedGroups.length - 1
+        ? width - offsetX
+        : Math.max(1, Math.round((group.total / total) * width));
+
+    rects.push({
+      x: offsetX,
+      y: 0,
+      width: groupWidth,
+      height,
+      label: group.kind,
+      value: group.total,
+      color: alpha(treemapPalette[groupIndex % treemapPalette.length], "18"),
+    });
+
+    let offsetY = 0;
+    group.items.forEach((item, itemIndex) => {
+      const itemHeight =
+        itemIndex === group.items.length - 1
+          ? height - offsetY
+          : Math.max(1, Math.round((item.size_bytes / group.total) * height));
+
+      rects.push({
+        x: offsetX,
+        y: offsetY,
+        width: groupWidth,
+        height: itemHeight,
+        label: item.path,
+        value: item.size_bytes,
+        color: alpha(treemapPalette[groupIndex % treemapPalette.length], "66"),
+        itemId: item.id,
+      });
+
+      offsetY += itemHeight;
+    });
+
+    offsetX += groupWidth;
+  });
+
+  return rects;
 }
 
 function App() {
@@ -165,7 +261,7 @@ function App() {
   const [nodeMode, setNodeMode] = useState<NodeModulesMode>("stale");
   const [staleDays, setStaleDays] = useState(30);
   const [customPaths, setCustomPaths] = useState("");
-  const [ignorePatterns, setIgnorePatterns] = useState("");
+  const [ignorePatterns] = useState("");
   const [docker, setDocker] = useState<DockerOptions>({
     dangling_images: true,
     unused_images: false,
@@ -182,6 +278,7 @@ function App() {
   const [report, setReport] = useState<CleanupResponse | null>(null);
   const [logs, setLogs] = useState<string[]>([]);
 
+  const logRef = useRef<HTMLPreElement | null>(null);
   const t = text[lang];
 
   useEffect(() => {
@@ -203,6 +300,12 @@ function App() {
     };
   }, []);
 
+  useEffect(() => {
+    if (logRef.current) {
+      logRef.current.scrollTop = logRef.current.scrollHeight;
+    }
+  }, [logs]);
+
   const selectedItems = useMemo(
     () => items.filter((item) => selectedIds.has(item.id)),
     [items, selectedIds],
@@ -212,6 +315,22 @@ function App() {
     () => selectedItems.reduce((sum, item) => sum + item.size_bytes, 0),
     [selectedItems],
   );
+
+  const treemapRects = useMemo(() => buildTreemapRects(items, 1000, 320), [items]);
+  const treemapGroups = treemapRects.filter((rect) => !rect.itemId);
+  const treemapLeaves = treemapRects.filter((rect) => rect.itemId);
+
+  function toggleSelect(id: string, checked: boolean) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (checked) {
+        next.add(id);
+      } else {
+        next.delete(id);
+      }
+      return next;
+    });
+  }
 
   async function startScan(e?: FormEvent) {
     e?.preventDefault();
@@ -233,10 +352,22 @@ function App() {
       setItems(result.items);
       setTotalBytes(result.total_bytes);
       setSelectedIds(new Set());
+      if (result.cancelled) {
+        setLogs((prev) => [...prev, `[warn] ${t.scanCancelled}`]);
+      }
     } catch (error) {
       setLogs((prev) => [...prev, `[error] ${String(error)}`]);
     } finally {
       setScanning(false);
+    }
+  }
+
+  async function stopScan() {
+    if (!scanning) return;
+    try {
+      await invoke("stop_scan");
+    } catch (error) {
+      setLogs((prev) => [...prev, `[error] ${String(error)}`]);
     }
   }
 
@@ -268,15 +399,15 @@ function App() {
       <header className="hero">
         <div>
           <h1>{t.title}</h1>
-          <p>{t.subtitle}</p>
+          <p>{lang === "zh" ? "只保留核心操作的简洁版界面" : "A cleaner, simpler interface focused on core actions"}</p>
         </div>
         <button className="lang-btn" onClick={() => setLang((v) => (v === "zh" ? "en" : "zh"))}>
           {t.language}
         </button>
       </header>
 
-      <section className="panel">
-        <form className="controls" onSubmit={startScan}>
+      <section className="panel compact-panel">
+        <form className="controls compact-controls" onSubmit={startScan}>
           <label>
             {t.sortBy}
             <select value={sortBy} onChange={(e) => setSortBy(e.target.value as SortBy)}>
@@ -284,7 +415,18 @@ function App() {
               <option value="last_used">{t.byLastUsed}</option>
             </select>
           </label>
+          <button className="primary" type="submit" disabled={scanning}>
+            {scanning ? t.scanning : t.scan}
+          </button>
+          <button className="warning" type="button" onClick={stopScan} disabled={!scanning}>
+            {t.stopScan}
+          </button>
+        </form>
+      </section>
 
+      <details className="panel advanced compact-advanced">
+        <summary>{t.advanced}</summary>
+        <div className="advanced-grid">
           <label>
             {t.nodeMode}
             <select value={nodeMode} onChange={(e) => setNodeMode(e.target.value as NodeModulesMode)}>
@@ -292,7 +434,6 @@ function App() {
               <option value="all">{t.allNodes}</option>
             </select>
           </label>
-
           <label>
             {t.staleDays}
             <input
@@ -302,79 +443,61 @@ function App() {
               onChange={(e) => setStaleDays(Number(e.target.value) || 30)}
             />
           </label>
-
-          <button className="primary" type="submit" disabled={scanning}>
-            {scanning ? t.scanning : t.scan}
-          </button>
-        </form>
-
-        <details className="advanced">
-          <summary>{t.advanced}</summary>
-          <div className="advanced-grid">
+          <label>
+            {t.customPaths}
+            <textarea
+              value={customPaths}
+              onChange={(e) => setCustomPaths(e.target.value)}
+              placeholder={lang === "zh" ? "/Users/sym/Code\n/D/workspace" : "/Users/sym/Code\nD:\\workspace"}
+            />
+          </label>
+          <fieldset>
+            <legend>{t.dockerScope}</legend>
             <label>
-              {t.customPaths}
-              <textarea
-                value={customPaths}
-                onChange={(e) => setCustomPaths(e.target.value)}
-                placeholder={lang === "zh" ? "/Users/sym/Code\n/D/workspace" : "/Users/sym/Code\nD:\\workspace"}
+              <input
+                type="checkbox"
+                checked={docker.dangling_images}
+                onChange={(e) => setDocker((d) => ({ ...d, dangling_images: e.target.checked }))}
               />
+              {t.dangling}
             </label>
             <label>
-              {t.ignorePatterns}
-              <textarea
-                value={ignorePatterns}
-                onChange={(e) => setIgnorePatterns(e.target.value)}
-                placeholder={lang === "zh" ? ".git\nnode_modules/.cache" : ".git\nnode_modules/.cache"}
+              <input
+                type="checkbox"
+                checked={docker.unused_images}
+                onChange={(e) => setDocker((d) => ({ ...d, unused_images: e.target.checked }))}
               />
+              {t.unusedImages}
             </label>
-            <fieldset>
-              <legend>{t.dockerScope}</legend>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={docker.dangling_images}
-                  onChange={(e) => setDocker((d) => ({ ...d, dangling_images: e.target.checked }))}
-                />
-                {t.dangling}
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={docker.unused_images}
-                  onChange={(e) => setDocker((d) => ({ ...d, unused_images: e.target.checked }))}
-                />
-                {t.unusedImages}
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={docker.stopped_containers}
-                  onChange={(e) =>
-                    setDocker((d) => ({ ...d, stopped_containers: e.target.checked }))
-                  }
-                />
-                {t.stoppedContainers}
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={docker.build_cache}
-                  onChange={(e) => setDocker((d) => ({ ...d, build_cache: e.target.checked }))}
-                />
-                {t.buildCache}
-              </label>
-              <label>
-                <input
-                  type="checkbox"
-                  checked={docker.volumes}
-                  onChange={(e) => setDocker((d) => ({ ...d, volumes: e.target.checked }))}
-                />
-                {t.volumes}
-              </label>
-            </fieldset>
-          </div>
-        </details>
-      </section>
+            <label>
+              <input
+                type="checkbox"
+                checked={docker.stopped_containers}
+                onChange={(e) =>
+                  setDocker((d) => ({ ...d, stopped_containers: e.target.checked }))
+                }
+              />
+              {t.stoppedContainers}
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={docker.build_cache}
+                onChange={(e) => setDocker((d) => ({ ...d, build_cache: e.target.checked }))}
+              />
+              {t.buildCache}
+            </label>
+            <label>
+              <input
+                type="checkbox"
+                checked={docker.volumes}
+                onChange={(e) => setDocker((d) => ({ ...d, volumes: e.target.checked }))}
+              />
+              {t.volumes}
+            </label>
+          </fieldset>
+        </div>
+      </details>
 
       <section className="panel metrics">
         <div>
@@ -407,6 +530,59 @@ function App() {
       </section>
 
       <section className="panel">
+        <h2 className="treemap-title">{t.treemap}</h2>
+        <p className="treemap-hint">{t.treemapHint}</p>
+        {items.length === 0 ? (
+          <p className="empty">{t.empty}</p>
+        ) : (
+          <div className="treemap-wrap">
+            <div className="treemap-canvas">
+              {treemapGroups.map((rect) => (
+                <div
+                  key={`group-${rect.label}`}
+                  className="treemap-group"
+                  style={{
+                    left: `${(rect.x / 1000) * 100}%`,
+                    top: `${(rect.y / 320) * 100}%`,
+                    width: `${(rect.width / 1000) * 100}%`,
+                    height: `${(rect.height / 320) * 100}%`,
+                    background: rect.color,
+                  }}
+                  title={`${rect.label} · ${formatBytes(rect.value)}`}
+                />
+              ))}
+
+              {treemapLeaves.map((rect) => (
+                <button
+                  key={rect.itemId}
+                  type="button"
+                  className={`treemap-item ${rect.itemId && selectedIds.has(rect.itemId) ? "selected" : ""}`}
+                  style={{
+                    left: `${(rect.x / 1000) * 100}%`,
+                    top: `${(rect.y / 320) * 100}%`,
+                    width: `${(rect.width / 1000) * 100}%`,
+                    height: `${(rect.height / 320) * 100}%`,
+                    background: rect.color,
+                  }}
+                  title={`${rect.label}\n${formatBytes(rect.value)}`}
+                  onClick={() => {
+                    if (!rect.itemId) return;
+                    toggleSelect(rect.itemId, !selectedIds.has(rect.itemId));
+                  }}
+                >
+                  {rect.width * rect.height > 24000 ? (
+                    <span>
+                      {formatBytes(rect.value)}
+                    </span>
+                  ) : null}
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
+      </section>
+
+      <section className="panel">
         {items.length === 0 ? (
           <p className="empty">{t.empty}</p>
         ) : (
@@ -415,11 +591,9 @@ function App() {
               <thead>
                 <tr>
                   <th />
-                  <th>{t.type}</th>
                   <th>{t.path}</th>
                   <th>{t.size}</th>
-                  <th>{t.lastUsed}</th>
-                  <th>{t.risk}</th>
+                  <th>{t.type}</th>
                 </tr>
               </thead>
               <tbody>
@@ -429,22 +603,12 @@ function App() {
                       <input
                         type="checkbox"
                         checked={selectedIds.has(item.id)}
-                        onChange={(e) => {
-                          const next = new Set(selectedIds);
-                          if (e.target.checked) {
-                            next.add(item.id);
-                          } else {
-                            next.delete(item.id);
-                          }
-                          setSelectedIds(next);
-                        }}
+                        onChange={(e) => toggleSelect(item.id, e.target.checked)}
                       />
                     </td>
-                    <td>{item.kind}</td>
                     <td className="path-cell">{item.path}</td>
                     <td>{formatBytes(item.size_bytes)}</td>
-                    <td>{formatTime(item.last_used_unix, lang, t.never)}</td>
-                    <td>{item.risk}</td>
+                    <td>{item.kind}</td>
                   </tr>
                 ))}
               </tbody>
@@ -455,7 +619,7 @@ function App() {
 
       <section className="panel logs">
         <h2>{t.logs}</h2>
-        <pre>{logs.join("\n") || "-"}</pre>
+        <pre ref={logRef}>{logs.join("\n") || "-"}</pre>
         {report && (
           <p className="report">
             {t.report}: {report.success_count} success / {report.failed_count} failed / {formatBytes(report.freed_bytes)}

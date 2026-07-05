@@ -13,8 +13,11 @@
     "windows": [
       {
         "title": "Dev Space Cleaner",
-        "width": 800,
-        "height": 600
+        "width": 1240,
+        "height": 900,
+        "minWidth": 1240,
+        "maxWidth": 1240,
+        "resizable": false
       }
     ],
     "security": {

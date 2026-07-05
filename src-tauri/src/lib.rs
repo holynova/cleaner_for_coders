@@ -2,9 +2,12 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 use tauri::{AppHandle, Emitter};
 use walkdir::WalkDir;
+
+static SCAN_CANCELLED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -71,6 +74,7 @@ struct ScanResponse {
     total_bytes: u64,
     item_count: usize,
     items: Vec<CleanupItem>,
+    cancelled: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -120,16 +124,21 @@ fn metadata_unix_time(path: &Path) -> u64 {
     }
 }
 
-fn dir_size(path: &Path) -> u64 {
+fn dir_size(path: &Path) -> Option<u64> {
     let mut total = 0_u64;
+    let mut processed = 0_u64;
     for entry in WalkDir::new(path).follow_links(false).into_iter().flatten() {
+        processed = processed.saturating_add(1);
+        if processed % 512 == 0 && SCAN_CANCELLED.load(Ordering::Relaxed) {
+            return None;
+        }
         if entry.file_type().is_file() {
             if let Ok(meta) = entry.metadata() {
                 total = total.saturating_add(meta.len());
             }
         }
     }
-    total
+    Some(total)
 }
 
 fn normalize_patterns(raw_patterns: &[String]) -> Vec<String> {
@@ -385,8 +394,12 @@ fn push_item(
 }
 
 #[tauri::command]
-fn scan_cleanup_targets(payload: ScanRequest) -> Result<ScanResponse, String> {
+fn scan_cleanup_targets(payload: ScanRequest, app: AppHandle) -> Result<ScanResponse, String> {
     let mut items: Vec<CleanupItem> = Vec::new();
+    let mut cancelled = false;
+    let mut scanned_dirs = 0_u64;
+    SCAN_CANCELLED.store(false, Ordering::SeqCst);
+    emit_log(&app, "info", "Scan started");
 
     let scan_roots: Vec<PathBuf> = if payload.scan_paths.is_empty() {
         default_scan_roots()
@@ -405,15 +418,35 @@ fn scan_cleanup_targets(payload: ScanRequest) -> Result<ScanResponse, String> {
     let now = now_unix();
     let stale_before = now.saturating_sub(payload.stale_days.saturating_mul(86_400));
 
-    for root in scan_roots {
+    'roots: for root in scan_roots {
+        emit_log(&app, "info", format!("Scanning root: {}", root.to_string_lossy()));
         let mut iter = WalkDir::new(&root).follow_links(false).into_iter();
 
         while let Some(entry) = iter.next() {
+            if SCAN_CANCELLED.load(Ordering::Relaxed) {
+                cancelled = true;
+                emit_log(&app, "warn", "Scan cancelled by user");
+                break 'roots;
+            }
             let Ok(entry) = entry else {
                 continue;
             };
 
             let p = entry.path();
+            if entry.file_type().is_dir() {
+                scanned_dirs = scanned_dirs.saturating_add(1);
+                if scanned_dirs % 400 == 0 {
+                    emit_log(
+                        &app,
+                        "info",
+                        format!(
+                            "Progress: scanned {} directories, found {} candidate(s)",
+                            scanned_dirs,
+                            items.len()
+                        ),
+                    );
+                }
+            }
             if entry.file_type().is_dir() && should_ignore(p, &patterns) {
                 iter.skip_current_dir();
                 continue;
@@ -433,7 +466,16 @@ fn scan_cleanup_targets(payload: ScanRequest) -> Result<ScanResponse, String> {
                 };
 
                 if include {
-                    let size = dir_size(p);
+                    emit_log(
+                        &app,
+                        "info",
+                        format!("Analyzing node_modules: {}", p.to_string_lossy()),
+                    );
+                    let Some(size) = dir_size(p) else {
+                        cancelled = true;
+                        emit_log(&app, "warn", "Scan cancelled while computing directory size");
+                        break 'roots;
+                    };
                     push_item(
                         &mut items,
                         "node_modules",
@@ -449,23 +491,40 @@ fn scan_cleanup_targets(payload: ScanRequest) -> Result<ScanResponse, String> {
         }
     }
 
-    for (kind, cache_path, risk) in cache_dirs() {
-        if cache_path.exists() && !should_ignore(&cache_path, &patterns) {
-            let size = dir_size(&cache_path);
-            let last_used = metadata_unix_time(&cache_path);
-            push_item(
-                &mut items,
-                &kind,
-                cache_path.to_string_lossy().to_string(),
-                size,
-                last_used,
-                &risk,
-                "package_manager",
-            );
+    if !cancelled {
+        for (kind, cache_path, risk) in cache_dirs() {
+            if SCAN_CANCELLED.load(Ordering::Relaxed) {
+                cancelled = true;
+                emit_log(&app, "warn", "Scan cancelled by user");
+                break;
+            }
+            if cache_path.exists() && !should_ignore(&cache_path, &patterns) {
+                emit_log(
+                    &app,
+                    "info",
+                    format!("Analyzing cache: {}", cache_path.to_string_lossy()),
+                );
+                let Some(size) = dir_size(&cache_path) else {
+                    cancelled = true;
+                    emit_log(&app, "warn", "Scan cancelled while computing cache size");
+                    break;
+                };
+                let last_used = metadata_unix_time(&cache_path);
+                push_item(
+                    &mut items,
+                    &kind,
+                    cache_path.to_string_lossy().to_string(),
+                    size,
+                    last_used,
+                    &risk,
+                    "package_manager",
+                );
+            }
         }
     }
 
-    if docker_available() {
+    if !cancelled && docker_available() {
+        emit_log(&app, "info", "Analyzing docker reclaimable data");
         let docker_df = scan_docker_df_reclaimable();
 
         if payload.docker_options.dangling_images {
@@ -540,12 +599,30 @@ fn scan_cleanup_targets(payload: ScanRequest) -> Result<ScanResponse, String> {
     }
 
     let total_bytes = items.iter().map(|i| i.size_bytes).sum();
+    emit_log(
+        &app,
+        if cancelled { "warn" } else { "success" },
+        format!(
+            "Scan finished: {} candidate(s), {}, cancelled={}",
+            items.len(),
+            total_bytes,
+            cancelled
+        ),
+    );
 
     Ok(ScanResponse {
         total_bytes,
         item_count: items.len(),
         items,
+        cancelled,
     })
+}
+
+#[tauri::command]
+fn stop_scan(app: AppHandle) -> Result<(), String> {
+    SCAN_CANCELLED.store(true, Ordering::SeqCst);
+    emit_log(&app, "warn", "Stopping scan...");
+    Ok(())
 }
 
 fn emit_log(app: &AppHandle, level: &str, message: impl Into<String>) {
@@ -632,7 +709,11 @@ fn execute_cleanup(payload: CleanupRequest, app: AppHandle) -> Result<CleanupRes
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
-        .invoke_handler(tauri::generate_handler![scan_cleanup_targets, execute_cleanup])
+        .invoke_handler(tauri::generate_handler![
+            scan_cleanup_targets,
+            stop_scan,
+            execute_cleanup
+        ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
 }
